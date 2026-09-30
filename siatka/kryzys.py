@@ -8,6 +8,8 @@ nie zastepuje pomocy specjalisty ani kontaktu z czlowiekiem.
 import re
 from typing import Optional
 
+from .normalizacja import bez_diakrytykow, warianty
+
 class SiatkaBezpieczenstwa:
     # Frazy o wysokim ryzyku — odmieniane warianty. Celowo szerokie,
     # bo lepiej zareagować raz za dużo niż przegapić.
@@ -295,37 +297,40 @@ class SiatkaBezpieczenstwa:
 
     # Składanie polskich diakrytyków → ASCII. Filtr ma być nadczuły: osoba
     # w kryzysie (albo STT) często pisze bez ogonków ("nie chce juz zyc").
-    # Dopasowujemy WZORCE i TEKST w tej samej, złożonej formie, więc łapiemy
-    # oba warianty bez dublowania listy fraz. Polskie znaki nie są metaznakami
+    # Każdy wzorzec kompilujemy w DWÓCH postaciach — z polskimi znakami i bez
+    # nich — a tekst sprawdzamy w obu postaciach (`normalizacja.warianty`).
+    # Dzięki temu "nie chcę już żyć", "nie chce juz zyc" i mieszanka obu trafiają
+    # tak samo, bez dublowania listy fraz. Polskie znaki nie są metaznakami
     # regexa, więc składanie wzorca jest bezpieczne (ż→z, [żc]→[zc] itd.).
-    _DIAKRYTYKI = str.maketrans("ąćęłńóśźżĄĆĘŁŃÓŚŹŻ", "acelnoszzACELNOSZZ")
 
-    @classmethod
-    def _zloz(cls, tekst: str) -> str:
-        """Składa diakrytyki TEKSTU użytkownika (tylko literalne znaki)."""
-        return tekst.translate(cls._DIAKRYTYKI)
-
-    @classmethod
-    def _zloz_wzor(cls, wzor: str) -> str:
-        """Składa diakrytyki WZORCA. Wzorce zawierają escape'y \\uXXXX jako
-        literalne ciągi (raw-string) — translate ich nie ruszy, więc najpierw
-        zamieniamy \\uXXXX na realne znaki (nie tykając \\s, \\w, \\b),
-        a potem składamy wszystkie diakrytyki."""
-        wzor = re.sub(r"\\u([0-9a-fA-F]{4})",
+    @staticmethod
+    def _rozwin_wzor(wzor: str) -> str:
+        """Wzorce zawierają escape'y \\uXXXX jako literalne ciągi (raw-string) —
+        zamieniamy je na realne znaki (nie tykając \\s, \\w, \\b), żeby dało
+        się je potem złożyć do ASCII."""
+        return re.sub(r"\\u([0-9a-fA-F]{4})",
                       lambda m: chr(int(m.group(1), 16)), wzor)
-        return wzor.translate(cls._DIAKRYTYKI)
+
+    @classmethod
+    def _kompiluj(cls, lista):
+        """Każdy wzorzec z diakrytykami i bez nich (bez duplikatów)."""
+        wzorce = []
+        for w in lista:
+            pelny = cls._rozwin_wzor(w)
+            for forma in dict.fromkeys((pelny, bez_diakrytykow(pelny))):
+                wzorce.append(re.compile(forma, re.IGNORECASE))
+        return wzorce
+
+    @staticmethod
+    def _trafia(wzorce, teksty) -> bool:
+        return any(wz.search(t) for wz in wzorce for t in teksty)
 
     def __init__(self):
-        self._wzorce_kryzys = [re.compile(self._zloz_wzor(w), re.IGNORECASE)
-                               for w in self.FRAZY_KRYZYS]
-        self._wzorce_przemoc = [re.compile(self._zloz_wzor(w), re.IGNORECASE)
-                                for w in self.FRAZY_PRZEMOC]
-        self._wzorce_medyczne = [re.compile(self._zloz_wzor(w), re.IGNORECASE)
-                                 for w in self.FRAZY_MEDYCZNE]
-        self._wzorce_wsparcia = [re.compile(self._zloz_wzor(w), re.IGNORECASE)
-                                 for w in self.FRAZY_WSPARCIA]
-        self._wzorce_rama = [re.compile(self._zloz_wzor(w), re.IGNORECASE)
-                             for w in self.FRAZY_RAMA_CUDZEJ_MOWY]
+        self._wzorce_kryzys = self._kompiluj(self.FRAZY_KRYZYS)
+        self._wzorce_przemoc = self._kompiluj(self.FRAZY_PRZEMOC)
+        self._wzorce_medyczne = self._kompiluj(self.FRAZY_MEDYCZNE)
+        self._wzorce_wsparcia = self._kompiluj(self.FRAZY_WSPARCIA)
+        self._wzorce_rama = self._kompiluj(self.FRAZY_RAMA_CUDZEJ_MOWY)
 
     def sprawdz(self, tekst: str) -> Optional[str]:
         """
@@ -335,18 +340,15 @@ class SiatkaBezpieczenstwa:
         """
         if not tekst or not tekst.strip():
             return None
-        t = self._zloz(tekst.lower())
-        for wz in self._wzorce_kryzys:
-            if wz.search(t):
-                return "kryzys"
-        for wz in self._wzorce_przemoc:
-            if wz.search(t):
-                return "przemoc"
+        t = warianty(tekst)
+        if self._trafia(self._wzorce_kryzys, t):
+            return "kryzys"
+        if self._trafia(self._wzorce_przemoc, t):
+            return "przemoc"
         # Medyczne SPRAWDZAMY NA KOŃCU: gdy ktoś pisze naraz o bólu i o tym, że nie
         # chce żyć, pierwszeństwo ma kryzys — tam liczy się rozmowa, nie karetka.
-        for wz in self._wzorce_medyczne:
-            if wz.search(t):
-                return "medyczny"
+        if self._trafia(self._wzorce_medyczne, t):
+            return "medyczny"
         return None
 
     def wsparcie(self, tekst: str) -> Optional[str]:
@@ -368,19 +370,17 @@ class SiatkaBezpieczenstwa:
             return None
         if self.sprawdz(tekst):
             return None                  # kryzys/przemoc/medyczny ma pierwszenstwo
-        t = self._zloz(tekst.lower())
+        t = warianty(tekst)
         # Rama cudzej mowy: "napisz wiersz, w ktorym ktos mowi, ze nie ma po co
         # wstawac" to prosba o tekst, nie sygnal o czlowieku. Bezpiecznik stoi
         # PRZED wzorcami, bo ma je unieważnić, a nie z nimi konkurowac.
         # Dotyczy WYLACZNIE warstwy wspierajacej - `sprawdz()` (kryzys, przemoc)
         # celowo NIE ma tego wyjatku: tam koszt pomylki jest nieodwracalny
         # i wolimy zareagowac raz za duzo na cudza wypowiedz niz raz za malo.
-        for wz in self._wzorce_rama:
-            if wz.search(t):
-                return None
-        for wz in self._wzorce_wsparcia:
-            if wz.search(t):
-                return "wsparcie"
+        if self._trafia(self._wzorce_rama, t):
+            return None
+        if self._trafia(self._wzorce_wsparcia, t):
+            return "wsparcie"
         return None
 
     def komunikat_wsparcia(self) -> str:

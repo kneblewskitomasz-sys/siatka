@@ -7,6 +7,8 @@ oczywiste zle tematy. Nie zastepuje kontaktu z czlowiekiem.
 
 import re
 
+from .normalizacja import bez_diakrytykow, warianty
+
 class SiatkaDziecieca:
     # Wzorce niedozwolone (regex, z granicami słów tam, gdzie groziłyby pomyłki).
     WZORCE = [
@@ -43,8 +45,24 @@ class SiatkaDziecieca:
         r"\bnienawidz[eę]\s+siebie", r"\bnie\s+chc[eę]\s+ży[ćc]",
     ]
 
+    # Wzorce, których postaci bez ogonków NIE kompilujemy, bo po złożeniu do
+    # ASCII trafiają w zwykłe słowo. „goł[aąeyo]" → „gol[aaeyo]", czyli „gola"
+    # z „strzeliłem gola" — typowe zdanie dziecka. Zmierzone testem fałszywych
+    # alarmów, nie przewidziane. Koszt: „pokaz gola pania" (bez ogonków) przechodzi.
+    _TYLKO_Z_OGONKAMI = {r"\bgoł[aąeyo]\b"}
+
     def __init__(self):
-        self._wzorce = [re.compile(w, re.IGNORECASE) for w in self.WZORCE]
+        # Każdy wzorzec z diakrytykami i bez nich — tak jak w warstwie
+        # kryzysowej. Dziecko pisze bez ogonków równie często jak dorosły,
+        # a wzorce z listy wyżej były zapisane tylko w jednej postaci
+        # ("nie mów rodzicom" przechodziło jako "nie mow rodzicom").
+        self._wzorce = [
+            re.compile(forma, re.IGNORECASE)
+            for w in self.WZORCE
+            for forma in dict.fromkeys(
+                (w,) if w in self._TYLKO_Z_OGONKAMI else (w, bez_diakrytykow(w))
+            )
+        ]
 
     # Polskie jednoliterowe słowa — NIE wolno ich sklejać z sąsiadem, bo "o seksie"
     # nie może stać się "oseksie" (zgubilibyśmy granicę \b w "o s e k s i e").
@@ -87,9 +105,12 @@ class SiatkaDziecieca:
     def niebezpieczne(self, tekst: str) -> bool:
         if not tekst:
             return False
-        t = tekst.lower()
-        warianty = (t, self._sklej_litery(t), self._sklej_zachlannie(t))
-        return any(w.search(v) for w in self._wzorce for v in warianty)
+        teksty = [
+            v
+            for t in warianty(tekst)
+            for v in (t, self._sklej_litery(t), self._sklej_zachlannie(t))
+        ]
+        return any(w.search(v) for w in self._wzorce for v in teksty)
 
     def przekierowanie(self) -> str:
         return ("Pobawmy się w coś fajnego! Chcesz zagadkę, grę w zgadywankę, "

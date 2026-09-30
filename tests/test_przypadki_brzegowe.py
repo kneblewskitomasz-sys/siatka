@@ -87,47 +87,106 @@ def test_biale_znaki_i_interpunkcja():
         assert S.sprawdz(tekst) == "kryzys", f"BIAŁE ZNAKI: {tekst!r}"
     assert S.sprawdz("mąż  mnie bije") == "przemoc"
 
-    # ZNANE LUKI. Wzorzec „nie " + _CHCE ma dosłowną spację, więc podwójna
-    # spacja albo myślniki między „nie" a „chcę" omijają warstwę kryzysową.
-    # Gorzej: zdanie wpada wtedy do filtra DZIECIĘCEGO (ma luźniejsze \s+) i
-    # człowiek w kryzysie dostaje „Pobawmy się w coś fajnego!" zamiast 116 123.
+    # Dawne ZNANE LUKI, zamknięte normalizacją wejścia (`siatka.normalizacja`).
+    # Wzorzec „nie " + _CHCE ma dosłowną spację, więc podwójna spacja albo
+    # myślniki między „nie" a „chcę" omijały warstwę kryzysową, a zdanie wpadało
+    # do filtra DZIECIĘCEGO — człowiek w kryzysie dostawał „Pobawmy się w coś
+    # fajnego!" zamiast 116 123. Pilnujemy kategorii przez PEŁNE API, bo właśnie
+    # zła kategoria była tu błędem, nie brak alarmu.
+    must_catch = [
+        "nie  chcę   żyć",
+        "nie-chcę-żyć",
+        "nie_chce_zyc",
+        "nie.chce.zyc",
+        "nie chcę\t\tjuż  żyć",
+        "NIE - CHCĘ - ŻYĆ",
+    ]
+    for tekst in must_catch:
+        w = sprawdz(tekst)
+        assert w.kategoria == "kryzys", f"NORMALIZACJA: {tekst!r} -> {w.kategoria!r}"
+        assert "116 123" in w.odpowiedz
+    assert sprawdz("mąż - mnie - bije").kategoria == "przemoc"
+
+    # Warstwa wspierająca: kropka na końcu i myślniki nie psują kotwicy końcowej.
+    for tekst in ("nie dam rady dłużej.", "nie-dam-rady-dłużej", "nie obudzić się jutro."):
+        assert S.wsparcie(tekst) == "wsparcie", f"WSPARCIE PO NORMALIZACJI: {tekst!r}"
+
+    # ZNANA LUKA: przecinek NIE jest normalizowany celowo — „nie, chcę żyć"
+    # znaczy coś przeciwnego niż „nie chcę żyć".
     _sprawdz_luki(
-        [
-            ("nie  chcę   żyć", "dzieci"),
-            ("nie-chcę-żyć", "dzieci"),
-            ("nie chcę, żyć", None),
-        ],
+        [("nie chcę, żyć", None)],
         lambda t: sprawdz(t).kategoria,
     )
 
 
 def test_tryb_dzieci_bez_polskich_znakow():
-    """Filtr dziecięcy NIE składa diakrytyków (w przeciwieństwie do
-    kryzysowego). Część wzorców ma ręcznie dopisany wariant ASCII."""
+    """Filtr dziecięcy sprawdza tekst i wzorce w obu postaciach: z polskimi
+    znakami i bez nich (tak jak warstwa kryzysowa)."""
     zablokuj = [
         "wodka", "gwalt", "zabic", "gdzie mieszkasz", "to nasz sekret",
         "NARKOTYKI", "Narkotyki", "SEKS", "seksss",
+        # dawne ZNANE LUKI — wzorce zapisane tylko z ogonkami; wśród nich
+        # grooming, który dziecko pisze bez ogonków równie często jak dorosły
+        "nie mow rodzicom",
+        "podaj mi swoj adres",
+        "spotkajmy sie",
+        "chce wodeczki",
+        "zapalmy skreta",
+        "nie chce zyc",
+        "s-p-o-t-k-a-j-m-y sie",
     ]
     for tekst in zablokuj:
         assert D.niebezpieczne(tekst), f"DZIECI BEZ OGONKÓW: {tekst!r}"
-
-    # ZNANE LUKI: wzorce zapisane tylko z ogonkami. Wśród nich grooming
-    # („nie mów rodzicom", „podaj mi swój adres") — dziecko pisze bez ogonków
-    # równie często jak dorosły.
-    _sprawdz_luki(
-        [
-            ("nie mow rodzicom", False),
-            ("podaj mi swoj adres", False),
-            ("spotkajmy sie", False),
-            ("pokaz gola pania", False),
-            ("chce wodeczki", False),
-            ("zapalmy skreta", False),
-            ("nie chce zyc", False),   # sprawdz() i tak złapie to jako kryzys
-        ],
-        D.niebezpieczne,
-    )
-    # ...ale przez pełne API kryzys dziecka nie ginie:
     assert sprawdz("nie chce zyc").kategoria == "kryzys"
+
+    # ZNANA LUKA, świadoma: „goł[aąeyo]" nie ma wersji bez ogonków, bo „gola"
+    # to też „strzeliłem gola". Patrz SiatkaDziecieca._TYLKO_Z_OGONKAMI.
+    _sprawdz_luki([("pokaz gola pania", False)], D.niebezpieczne)
+    assert D.niebezpieczne("pokaż gołą panią")
+
+
+def test_zdania_dziecka_bez_alarmu():
+    """Fałszywe alarmy: zwykłe zdania dziecka (szkoła, zabawa, jedzenie) NIE
+    mogą włączyć żadnej warstwy. Składanie diakrytyków w filtrze dziecięcym
+    zwiększa ryzyko kolizji ze zwykłymi słowami — ten test je łapie.
+    Część zdań celowo bez ogonków i z myślnikami, jak pisze dziecko."""
+    zdania = [
+        # szkoła
+        "Dzisiaj w szkole mieliśmy klasówkę z matmy",
+        "Pani od polskiego zadała wypracowanie",
+        "mam jutro sprawdzian z przyrody",
+        "Kolega pożyczył mi gumkę",
+        "Kupiliśmy nowe buty do szkoły",
+        "Ile jest dwa razy trzy?",
+        "czytam ksiazke o dinozaurach",
+        # zabawa
+        "Strzeliłem gola na WF-ie",
+        "strzelilem gola na wfie",
+        "Na przerwie graliśmy w berka",
+        "Idę z tatą na plac zabaw",
+        "Zbudowałem wieżę z klocków Lego",
+        "Zagrajmy w chowanego",
+        "gramy w Minecrafta, zbudowalem dom",
+        "Wczoraj padał deszcz i skakałem po kałużach",
+        # jedzenie
+        "Mama zrobiła naleśniki z dżemem",
+        "Na obiad była zupa pomidorowa",
+        "lubie lody czekoladowe",
+        "Czy mogę zjeść jabłko?",
+        "Zjadłem kanapkę z serem na drugie śniadanie",
+    ]
+    assert len(zdania) == 20
+    for tekst in zdania:
+        w = sprawdz(tekst)
+        assert w.bezpieczny, f"FAŁSZYWY ALARM: {tekst!r} -> {w.kategoria!r}"
+        assert S.wsparcie(tekst) is None, f"FAŁSZYWY ALARM WSPARCIA: {tekst!r}"
+
+    # ZNANY FAŁSZYWY ALARM sprzed normalizacji (wzorzec `\bbomb\w*`), poza
+    # zakresem tego PR — trafi do przeglądu wzorców dziecięcych.
+    _sprawdz_luki(
+        [("Ubieramy choinkę i wieszamy bombki", "dzieci")],
+        lambda t: sprawdz(t).kategoria,
+    )
 
 
 # ── 2. Literówki ──────────────────────────────────────────────────────────────
@@ -235,6 +294,7 @@ def uruchom():
         test_brak_polskich_znakow,
         test_biale_znaki_i_interpunkcja,
         test_tryb_dzieci_bez_polskich_znakow,
+        test_zdania_dziecka_bez_alarmu,
         test_literowki,
         test_przeczenie_kryzys,
         test_przeczenie_przemoc_i_medyczne,
@@ -242,7 +302,8 @@ def uruchom():
     for t in testy:
         t()
     print(f"✅ Przypadki brzegowe: {len(testy)} grup (ogonki, białe znaki, "
-          "tryb dzieci, literówki, przeczenia) — OK, znane luki bez zmian.")
+          "tryb dzieci, zdania dziecka, literówki, przeczenia) — OK, "
+          "znane luki bez zmian.")
 
 
 if __name__ == "__main__":

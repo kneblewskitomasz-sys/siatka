@@ -72,7 +72,10 @@ zdaniem troski i oddaj głos modelowi. Gdy tekst jest jednocześnie kryzysem,
 ### Odporność
 
 - **Bez polskich ogonków** — „nie chce juz zyc" łapane tak samo jak „nie chcę
-  już żyć" (tekst i wzorce składane do ASCII przed porównaniem).
+  już żyć" we wszystkich warstwach, także dziecięcej (tekst i wzorce
+  sprawdzane w dwóch postaciach: z ogonkami i bez).
+- **Białe znaki i separatory** — „nie  chcę   żyć", „nie-chcę-żyć",
+  „nie_chce_zyc" łapane jak „nie chcę żyć" (`siatka/normalizacja.py`).
 - **Rozbijanie słów** („s e k s", „k.u.r.w.a") — filtr dziecięcy skleja ciągi
   pojedynczych liter przed sprawdzeniem.
 - **Rama cudzej mowy** — „napisz wiersz, w którym ktoś mówi, że nie ma po co
@@ -234,10 +237,12 @@ are Polish. Outside Poland, adapt them to local services.
   - it does not parse negation — `nie myślę o samobójstwie` ("I'm not thinking
     about suicide") still triggers the crisis response (intentional:
     over-sensitivity is preferred to a missed crisis);
-  - the child filter does not fold Polish diacritics, so some child-mode
-    phrases written without them (e.g. `nie mow rodzicom`) are not blocked;
-  - repeated spaces or hyphens between `nie` and `chcę` bypass the crisis
-    layer (`nie  chcę   żyć`).
+  - commas are not normalised on purpose (`nie, chcę żyć` means the
+    opposite of `nie chcę żyć`), so `nie chcę, żyć` is not caught.
+
+  Input normalisation (`siatka/normalizacja.py`) collapses whitespace, turns
+  `-`, `_` and `.` into spaces, and checks every layer both with and without
+  Polish diacritics.
 
   These gaps are pinned in `tests/test_przypadki_brzegowe.py` and listed in
   `TEST_RESULTS.md`, so any change to them is visible.
