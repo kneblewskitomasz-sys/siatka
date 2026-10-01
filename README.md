@@ -72,7 +72,10 @@ zdaniem troski i oddaj głos modelowi. Gdy tekst jest jednocześnie kryzysem,
 ### Odporność
 
 - **Bez polskich ogonków** — „nie chce juz zyc" łapane tak samo jak „nie chcę
-  już żyć" (tekst i wzorce składane do ASCII przed porównaniem).
+  już żyć" we wszystkich warstwach, także dziecięcej (tekst i wzorce
+  sprawdzane w dwóch postaciach: z ogonkami i bez).
+- **Białe znaki i separatory** — „nie  chcę   żyć", „nie-chcę-żyć",
+  „nie_chce_zyc" łapane jak „nie chcę żyć" (`siatka/normalizacja.py`).
 - **Rozbijanie słów** („s e k s", „k.u.r.w.a") — filtr dziecięcy skleja ciągi
   pojedynczych liter przed sprawdzeniem.
 - **Rama cudzej mowy** — „napisz wiersz, w którym ktoś mówi, że nie ma po co
@@ -105,15 +108,40 @@ pip install -e .          # z katalogu pakietu; zero zależności
 python tests/test_siatka_bezpieczenstwa.py
 python tests/test_tryb_dzieci.py
 python tests/test_api.py
+python tests/test_przypadki_brzegowe.py
 ```
 
 Wymaga wyłącznie Pythona >= 3.12 ze standardowej biblioteki. Działa offline.
+Ostatni wynik testów: `TEST_RESULTS.md`.
 
 ---
 
-## EN — What it does
+## EN — Installation
 
-One public API:
+Requirements: **Python >= 3.12**. No third-party dependencies, no network
+access, no AI model — only `re` and `typing` from the standard library.
+
+The package is not published on PyPI yet. Install it from source:
+
+```bash
+git clone https://github.com/kneblewskitomasz-sys/siatka.git
+cd siatka
+python3.12 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -e .
+```
+
+Or directly from GitHub, without cloning:
+
+```bash
+pip install "git+https://github.com/kneblewskitomasz-sys/siatka.git"
+```
+
+## EN — Usage
+
+The whole public API is one function, `sprawdz(tekst)` ("check(text)"). Call it
+on every user message **before** sending it to your LLM (and, in child mode,
+on the model's answer as well):
 
 ```python
 from siatka import sprawdz
@@ -122,7 +150,28 @@ result = sprawdz("nie chcę już żyć")   # "I don't want to live anymore"
 result.bezpieczny   # False
 result.kategoria    # "kryzys" (crisis)
 result.odpowiedz    # ready-made message with a helpline number (116 123 / 112)
+
+sprawdz("jaka jest dziś pogoda?")      # "what's the weather today?"
+# -> bezpieczny=True, kategoria=None, odpowiedz=None
 ```
+
+A typical integration in a chat loop:
+
+```python
+from siatka import sprawdz
+
+def answer(user_message: str) -> str:
+    result = sprawdz(user_message)
+    if not result.bezpieczny:
+        # Do NOT call the model. Return the fixed safety message instead.
+        return result.odpowiedz
+    return call_your_llm(user_message)
+```
+
+Text without Polish diacritics works the same way for the crisis, violence and
+medical layers — `sprawdz("nie chce juz zyc")` also returns `"kryzys"`.
+
+## EN — What it does
 
 `sprawdz(tekst)` returns a `WynikSprawdzenia` object with:
 
@@ -173,16 +222,75 @@ at the same time, `wsparcie()` deliberately stays silent.
 Helpline numbers in the messages (116 123, 116 111, 112, 999, 800 120 002)
 are Polish. Outside Poland, adapt them to local services.
 
-## EN — Install & test
+## EN — Limitations
+
+- **Polish only.** Patterns, word lists and response messages are written for
+  Polish. Text in any other language (including English) passes through as
+  "safe" — `sprawdz("I want to die")` returns `bezpieczny=True`. Do not use
+  siatka as the only safety layer for a multilingual product.
+- **Pattern-based, not understanding-based.** Detection is a fixed list of
+  regular expressions and keywords. Consequences:
+  - it catches what the patterns describe and nothing else; new slang,
+    indirect phrasing or context spread over several messages can be missed;
+  - typos *inside* a matched word stem are not caught (`samobujstwo`,
+    `nie chcem żyć`); there is no fuzzy matching;
+  - it does not parse negation — `nie myślę o samobójstwie` ("I'm not thinking
+    about suicide") still triggers the crisis response (intentional:
+    over-sensitivity is preferred to a missed crisis);
+  - commas are not normalised on purpose (`nie, chcę żyć` means the
+    opposite of `nie chcę żyć`), so `nie chcę, żyć` is not caught.
+
+  Input normalisation (`siatka/normalizacja.py`) collapses whitespace, turns
+  `-`, `_` and `.` into spaces, and checks every layer both with and without
+  Polish diacritics.
+
+  These gaps are pinned in `tests/test_przypadki_brzegowe.py` and listed in
+  `TEST_RESULTS.md`, so any change to them is visible.
+- **It does not replace a human.** siatka only decides *whether* to stop the
+  conversation and *which* fixed message to show. It cannot assess risk,
+  follow up, call for help or stay with the person. Every deployment that
+  can reach people in crisis needs a human escalation path (moderators,
+  trained staff, or at minimum clear information about real helplines), and
+  must not advertise the filter as protection.
+- **Single message, no memory.** Each call looks at one piece of text in
+  isolation; it has no conversation history.
+- **Local helplines.** The phone numbers in the messages are valid in Poland
+  only.
+
+## EN — Running the tests
 
 ```bash
-pip install -e .          # from the package directory; zero dependencies
 python tests/test_siatka_bezpieczenstwa.py
 python tests/test_tryb_dzieci.py
 python tests/test_api.py
+python tests/test_przypadki_brzegowe.py   # typos, missing diacritics, negation
+# or, if pytest is installed:
+python -m pytest
 ```
 
-Requires only Python >= 3.12 from the standard library. Works offline.
+The tests run on plain `assert` and need nothing beyond Python >= 3.12. The
+latest recorded run is in `TEST_RESULTS.md`.
+
+## Project plan / milestones
+
+Planned work for a grant application to **NLnet** (call closing
+**3 November 2026**). The goal is to turn siatka from a single-product filter
+into a documented, measurable and reusable safety layer for Polish-language
+LLM applications, released under Apache-2.0. Durations are estimates of
+effort; budget per milestone is to be set in the application.
+
+| # | Milestone | Main deliverables | Est. effort |
+|---|---|---|---|
+| M1 | **Evaluation corpus & metrics** | Public, anonymised/synthetic Polish test corpus (crisis, violence, medical, child-unsafe, and hard negatives), with recall / false-alarm numbers per category published for each release; CI running all tests on every change. | 1.5 months |
+| M2 | **Robustness fixes** | Whitespace/hyphen normalisation in all layers; diacritic folding in the child filter; controlled typo tolerance for high-risk stems (e.g. `samobujstwo`); regression tests for every fixed gap listed in `TEST_RESULTS.md`. | 1.5 months |
+| M3 | **Negation & context handling** | Documented rules for negation and reported speech across all layers, keeping the "never miss a crisis" policy; optional multi-message window so signals split across messages (e.g. by speech-to-text) are not lost. | 2 months |
+| M4 | **Configurable responses & localisation of helplines** | Response messages and helpline numbers moved to data files, so deployers can adapt them (other countries, institutions) without editing code; message review with people experienced in crisis support. | 1 month |
+| M5 | **Packaging & integration** | PyPI release with semantic versioning, typed API reference, integration examples (plain chat loop, voice/STT pipeline, child mode on input and output), and a guide on adding a human escalation path. | 1 month |
+| M6 | **Independent review & 1.0 release** | External security/safety review of patterns and bypasses, published findings and fixes, 1.0 release and a short report on measured results against M1 baselines. | 1 month |
+
+Out of scope for this plan: adding an AI model, network calls, or collecting
+real user conversations — the project stays deterministic, offline and
+dependency-free.
 
 ---
 
